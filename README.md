@@ -127,7 +127,7 @@ kubectl get hpa -n transaction-validator
 
 ## 🔄 CI/CD Pipeline
 
-- **Test & Build**: terraform fmt, tflint, kubeval, helm lint, checkov, trivy
+- **Test & Build**: terraform fmt, tflint, kubeconform, helm lint, checkov, trivy
 - **Infrastructure Deploy (Staging)**: Plan, manual approval, apply, smoke tests
 - **Application Deploy (Staging)**: Deploy, integration tests, auto-rollback
 - **Production Deploy**: Manual approval + blue-green deployment with auto-rollback

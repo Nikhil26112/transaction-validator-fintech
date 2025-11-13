@@ -50,14 +50,13 @@ jobs:
 
       - name: Validate Kubernetes Manifests
         run: |
-          # Install kubeval
-          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
-          tar xf kubeval-linux-amd64.tar.gz
-          sudo mv kubeval /usr/local/bin
+          # Install kubeconform (modern replacement for kubeval)
+          curl -L https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin
           
           # Render Helm templates and validate
           helm template transaction-validator ./helm/transaction-validator > /tmp/rendered-manifests.yaml
-          kubeval --strict /tmp/rendered-manifests.yaml
+          kubeconform -strict -summary /tmp/rendered-manifests.yaml
 
       - name: Helm Lint
         run: helm lint helm/transaction-validator
