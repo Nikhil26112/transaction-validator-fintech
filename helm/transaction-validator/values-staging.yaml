@@ -1,0 +1,22 @@
+# Staging environment overrides
+replicaCount: 3
+
+image:
+  tag: "v1.0.0"  # Use stable tags in staging
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 10
+
+env:
+  LOG_LEVEL: "info"
+  MAX_TRANSACTIONS_PER_SECOND: "2000"
+

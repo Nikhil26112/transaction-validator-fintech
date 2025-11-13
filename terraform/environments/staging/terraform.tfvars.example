@@ -1,0 +1,38 @@
+# AWS Configuration
+aws_region   = "us-east-1"
+environment  = "staging"
+project_name = "transaction-validator"
+
+# VPC Configuration
+vpc_cidr             = "10.1.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+public_subnet_cidrs  = ["10.1.1.0/24", "10.1.2.0/24", "10.1.3.0/24"]
+private_subnet_cidrs = ["10.1.11.0/24", "10.1.12.0/24", "10.1.13.0/24"]
+database_subnet_cidrs = ["10.1.21.0/24", "10.1.22.0/24", "10.1.23.0/24"]
+
+# NAT Gateway (single for cost optimization in staging)
+single_nat_gateway = true
+
+# Aurora PostgreSQL
+db_instance_class    = "db.t4g.medium"
+db_instance_count    = 2
+db_database_name     = "transactionvalidator"
+db_master_username   = "dbadmin"
+db_deletion_protection = false
+db_skip_final_snapshot = false
+
+# ElastiCache Redis
+redis_node_type       = "cache.t4g.medium"
+redis_num_cache_nodes = 2
+
+# EKS Cluster
+eks_cluster_version      = "1.28"
+eks_node_instance_types  = ["t3.medium"]
+eks_node_desired_size    = 3
+eks_node_min_size        = 2
+eks_node_max_size        = 6
+
+# Observability
+cloudwatch_log_retention_days = 7
+alert_email = "devops@example.com"
+

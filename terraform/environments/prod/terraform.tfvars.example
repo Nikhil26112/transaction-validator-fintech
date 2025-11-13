@@ -1,0 +1,38 @@
+# Example terraform.tfvars for Production Environment
+# Copy this file to terraform.tfvars and update with your values
+
+aws_region   = "us-east-1"
+project_name = "transaction-validator"
+environment  = "prod"
+
+# Networking
+vpc_cidr             = "10.2.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+public_subnet_cidrs  = ["10.2.1.0/24", "10.2.2.0/24", "10.2.3.0/24"]
+private_subnet_cidrs = ["10.2.11.0/24", "10.2.12.0/24", "10.2.13.0/24"]
+database_subnet_cidrs = ["10.2.21.0/24", "10.2.22.0/24", "10.2.23.0/24"]
+single_nat_gateway   = false # High availability for prod
+
+# Database
+database_name                    = "transactionvalidator"
+database_master_username         = "dbadmin"
+aurora_instance_class            = "db.r6g.large" # Production grade
+aurora_instance_count            = 3 # Multi-AZ for HA
+database_backup_retention_period = 7
+database_deletion_protection     = true
+database_skip_final_snapshot     = false
+
+# Cache
+redis_node_type              = "cache.r7g.large" # Production grade
+redis_num_cache_nodes        = 3 # Multi-AZ for HA
+redis_multi_az_enabled       = true
+redis_snapshot_retention_limit = 7
+
+# EKS
+eks_cluster_version = "1.28"
+
+# Observability
+alert_email_addresses = ["ops-team@example.com", "oncall@example.com"]
+log_retention_days    = 30
+audit_log_retention_days = 90
+

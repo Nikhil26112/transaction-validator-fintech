@@ -1,0 +1,19 @@
+# Production environment overrides
+replicaCount: 5
+
+resources:
+  limits:
+    cpu: 4000m
+    memory: 2Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+autoscaling:
+  minReplicas: 5
+  maxReplicas: 20
+
+env:
+  LOG_LEVEL: "info"
+  MAX_TRANSACTIONS_PER_SECOND: "5000"
+

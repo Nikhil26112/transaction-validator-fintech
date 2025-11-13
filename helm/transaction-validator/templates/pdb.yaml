@@ -1,0 +1,14 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "transaction-validator.fullname" . }}
+  labels:
+    {{- include "transaction-validator.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "transaction-validator.selectorLabels" . | nindent 6 }}
+{{- end }}
+

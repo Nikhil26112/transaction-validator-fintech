@@ -1,0 +1,14 @@
+apiVersion: v2
+name: transaction-validator
+description: A Helm chart for Transaction Validator microservice
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - transaction
+  - validator
+  - payment
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com
+

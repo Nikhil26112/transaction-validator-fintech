@@ -1,0 +1,22 @@
+# Development environment overrides
+replicaCount: 2
+
+image:
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 5
+
+env:
+  LOG_LEVEL: "debug"
+  MAX_TRANSACTIONS_PER_SECOND: "100"
+

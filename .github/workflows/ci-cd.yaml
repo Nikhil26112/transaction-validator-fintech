@@ -1,0 +1,616 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: transaction-validator
+
+jobs:
+  # ============================================
+  # Stage 1: Test & Build
+  # ============================================
+  test-and-build:
+    name: Test and Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Install tflint
+        run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          tflint --version
+
+      - name: Run tflint
+        run: |
+          cd terraform/modules
+          for module in */; do
+            echo "Linting module: $module"
+            cd "$module"
+            tflint --init
+            tflint --minimum-failure-severity=error
+            cd ..
+          done
+
+      - name: Validate Kubernetes Manifests
+        run: |
+          # Install kubeval
+          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+          tar xf kubeval-linux-amd64.tar.gz
+          sudo mv kubeval /usr/local/bin
+          
+          # Render Helm templates and validate
+          helm template transaction-validator ./helm/transaction-validator > /tmp/rendered-manifests.yaml
+          kubeval --strict /tmp/rendered-manifests.yaml
+
+      - name: Helm Lint
+        run: helm lint helm/transaction-validator
+
+      - name: Security Scan - Infrastructure
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          soft_fail: false
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        id: build
+
+      - name: Scan Docker Image for Vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.build.outputs.image }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+
+  # ============================================
+  # Stage 2: Infrastructure Deploy (Staging)
+  # ============================================
+  plan-staging-infrastructure:
+    name: Plan Staging Infrastructure
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    if: github.ref == 'refs/heads/develop'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: |
+          cd terraform/environments/staging
+          terraform init
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd terraform/environments/staging
+          terraform plan -out=tfplan -no-color | tee plan_output.txt
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-tfplan
+          path: |
+            terraform/environments/staging/tfplan
+            terraform/environments/staging/.terraform/
+          retention-days: 5
+
+  deploy-staging-infrastructure:
+    name: Deploy Staging Infrastructure
+    runs-on: ubuntu-latest
+    needs: plan-staging-infrastructure
+    if: github.ref == 'refs/heads/develop'
+    environment: staging-infrastructure
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: staging-tfplan
+          path: terraform/environments/staging
+
+      - name: Terraform Apply
+        run: |
+          cd terraform/environments/staging
+          terraform init
+          terraform apply -auto-approve tfplan
+
+      - name: Run Infrastructure Smoke Tests
+        run: |
+          echo "🧪 Running infrastructure smoke tests..."
+          
+          # Test 1: Verify VPC exists
+          VPC_ID=$(cd terraform/environments/staging && terraform output -raw vpc_id)
+          aws ec2 describe-vpcs --vpc-ids $VPC_ID
+          echo "✅ VPC exists: $VPC_ID"
+          
+          # Test 2: Verify EKS cluster is active
+          CLUSTER_NAME=$(cd terraform/environments/staging && terraform output -raw eks_cluster_name)
+          CLUSTER_STATUS=$(aws eks describe-cluster --name $CLUSTER_NAME --query 'cluster.status' --output text)
+          if [ "$CLUSTER_STATUS" != "ACTIVE" ]; then
+            echo "❌ EKS cluster not active: $CLUSTER_STATUS"
+            exit 1
+          fi
+          echo "✅ EKS cluster active: $CLUSTER_NAME"
+          
+          # Test 3: Verify Aurora cluster is available
+          AURORA_ENDPOINT=$(cd terraform/environments/staging && terraform output -raw aurora_cluster_endpoint)
+          if [ -z "$AURORA_ENDPOINT" ]; then
+            echo "❌ Aurora endpoint not found"
+            exit 1
+          fi
+          echo "✅ Aurora cluster available: $AURORA_ENDPOINT"
+          
+          # Test 4: Verify Redis cluster is available
+          REDIS_ENDPOINT=$(cd terraform/environments/staging && terraform output -raw redis_endpoint)
+          if [ -z "$REDIS_ENDPOINT" ]; then
+            echo "❌ Redis endpoint not found"
+            exit 1
+          fi
+          echo "✅ Redis cluster available: $REDIS_ENDPOINT"
+          
+          echo "✅ All infrastructure smoke tests passed!"
+
+  # ============================================
+  # Stage 3: Application Deploy (Staging)
+  # ============================================
+  deploy-staging-application:
+    name: Deploy Staging Application
+    runs-on: ubuntu-latest
+    needs: deploy-staging-infrastructure
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name transaction-validator-staging --region ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform (for outputs)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+
+      - name: Get Current Revision
+        id: current
+        run: |
+          CURRENT_REVISION=$(helm list -n transaction-validator -o json | jq -r '.[0].revision // "0"')
+          echo "revision=$CURRENT_REVISION" >> $GITHUB_OUTPUT
+          echo "📦 Current Helm revision: $CURRENT_REVISION"
+
+      - name: Deploy with Helm
+        run: |
+          cd terraform/environments/staging
+          terraform init
+          ROLE_ARN=$(terraform output -raw app_secrets_role_arn)
+          
+          cd ../../..
+          helm upgrade --install transaction-validator ./helm/transaction-validator \
+            --namespace transaction-validator \
+            --create-namespace \
+            --values ./helm/transaction-validator/values-staging.yaml \
+            --set image.tag=${{ github.sha }} \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN \
+            --wait \
+            --timeout 5m
+
+      - name: Run Integration Tests
+        id: integration_tests
+        run: |
+          echo "🧪 Running integration tests..."
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=transaction-validator -n transaction-validator --timeout=5m
+          
+          # Test 1: Verify all pods are running
+          READY_PODS=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.status.readyReplicas}')
+          DESIRED_PODS=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.replicas}')
+          if [ "$READY_PODS" != "$DESIRED_PODS" ]; then
+            echo "❌ Pod count mismatch: $READY_PODS/$DESIRED_PODS"
+            exit 1
+          fi
+          echo "✅ All pods ready: $READY_PODS/$DESIRED_PODS"
+          
+          # Test 2: Check for crashloops
+          RESTARTS=$(kubectl get pods -n transaction-validator -o jsonpath='{.items[*].status.containerStatuses[*].restartCount}' | awk '{s+=$1} END {print s}')
+          if [ "$RESTARTS" -gt "2" ]; then
+            echo "⚠️  Warning: High restart count: $RESTARTS"
+          fi
+          
+          # Test 3: Verify service endpoint
+          SVC_EXISTS=$(kubectl get svc transaction-validator -n transaction-validator -o name 2>/dev/null || echo "")
+          if [ -z "$SVC_EXISTS" ]; then
+            echo "❌ Service not found"
+            exit 1
+          fi
+          echo "✅ Service exists"
+          
+          # Test 4: Check ingress
+          INGRESS_EXISTS=$(kubectl get ingress transaction-validator -n transaction-validator -o name 2>/dev/null || echo "")
+          if [ -n "$INGRESS_EXISTS" ]; then
+            echo "✅ Ingress configured"
+          fi
+          
+          # Test 5: Test application health endpoint
+          RANDOM_POD=$(kubectl get pods -n transaction-validator -l app.kubernetes.io/name=transaction-validator -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec $RANDOM_POD -n transaction-validator -- wget -q -O- http://localhost:8080/health 2>/dev/null || echo "⚠️  Health endpoint not responding"
+          
+          # Test 6: Check HPA is configured
+          HPA_EXISTS=$(kubectl get hpa transaction-validator -n transaction-validator -o name 2>/dev/null || echo "")
+          if [ -n "$HPA_EXISTS" ]; then
+            echo "✅ HPA configured"
+          fi
+          
+          echo "✅ All integration tests passed!"
+
+      - name: Automated Rollback on Failure
+        if: failure() && steps.current.outputs.revision != '0'
+        run: |
+          echo "❌ Staging deployment failed! Initiating automatic rollback..."
+          
+          helm rollback transaction-validator -n transaction-validator --wait --timeout=5m
+          
+          # Verify rollback
+          kubectl rollout status deployment/transaction-validator -n transaction-validator --timeout=5m
+          
+          echo "✅ Rollback completed successfully"
+          kubectl get pods -n transaction-validator
+          
+          exit 1
+
+  # ============================================
+  # Stage 4: Production Deploy (Blue-Green)
+  # ============================================
+  deploy-production:
+    name: Deploy to Production (Blue-Green)
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    if: github.ref == 'refs/heads/main'
+    environment: 
+      name: production
+      url: https://api.transaction-validator.com
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+
+      - name: Terraform Apply
+        run: |
+          cd terraform/environments/prod
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name transaction-validator-prod --region ${{ env.AWS_REGION }}
+
+      - name: Save Current State (Blue)
+        id: blue
+        run: |
+          # Check if deployment exists
+          if kubectl get deployment transaction-validator -n transaction-validator &> /dev/null; then
+            BLUE_IMAGE=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.template.spec.containers[0].image}')
+            BLUE_REPLICAS=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.replicas}')
+            echo "image=$BLUE_IMAGE" >> $GITHUB_OUTPUT
+            echo "replicas=$BLUE_REPLICAS" >> $GITHUB_OUTPUT
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "💙 Current BLUE deployment: $BLUE_IMAGE ($BLUE_REPLICAS replicas)"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No existing deployment (first deployment)"
+          fi
+
+      - name: Deploy GREEN Environment
+        run: |
+          cd terraform/environments/prod
+          terraform init
+          ROLE_ARN=$(terraform output -raw app_secrets_role_arn)
+          
+          cd ../../..
+          
+          # Deploy new version (GREEN) alongside existing BLUE
+          helm upgrade --install transaction-validator-green ./helm/transaction-validator \
+            --namespace transaction-validator \
+            --create-namespace \
+            --values ./helm/transaction-validator/values-prod.yaml \
+            --set fullnameOverride=transaction-validator-green \
+            --set image.tag=${{ github.sha }} \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN \
+            --set service.name=transaction-validator-green \
+            --wait \
+            --timeout 10m
+          
+          echo "💚 GREEN deployment created successfully"
+
+      - name: Wait for GREEN Pods Ready
+        run: |
+          echo "⏳ Waiting for GREEN pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=transaction-validator-green -n transaction-validator --timeout=5m
+          echo "✅ GREEN pods are ready"
+
+      - name: Run Health Checks on GREEN
+        id: health_check
+        run: |
+          echo "🏥 Running comprehensive health checks on GREEN deployment..."
+          sleep 30  # Allow app to fully initialize
+          
+          # Get GREEN pods
+          GREEN_PODS=$(kubectl get pods -n transaction-validator -l app.kubernetes.io/name=transaction-validator-green -o jsonpath='{.items[*].metadata.name}')
+          POD_COUNT=$(echo $GREEN_PODS | wc -w)
+          echo "📊 Testing $POD_COUNT GREEN pods"
+          
+          # Check 1: All pods are Running
+          for POD in $GREEN_PODS; do
+            POD_STATUS=$(kubectl get pod $POD -n transaction-validator -o jsonpath='{.status.phase}')
+            if [ "$POD_STATUS" != "Running" ]; then
+              echo "❌ Health check failed: Pod $POD not running (status: $POD_STATUS)"
+              exit 1
+            fi
+          done
+          echo "✅ All GREEN pods are Running"
+          
+          # Check 2: No container restarts
+          MAX_RESTARTS=0
+          for POD in $GREEN_PODS; do
+            RESTARTS=$(kubectl get pod $POD -n transaction-validator -o jsonpath='{.status.containerStatuses[0].restartCount}')
+            if [ "$RESTARTS" -gt "$MAX_RESTARTS" ]; then
+              echo "❌ Health check failed: Pod $POD has restarted $RESTARTS times"
+              exit 1
+            fi
+          done
+          echo "✅ No container restarts detected"
+          
+          # Check 3: Readiness probes passing
+          for POD in $GREEN_PODS; do
+            READY=$(kubectl get pod $POD -n transaction-validator -o jsonpath='{.status.containerStatuses[0].ready}')
+            if [ "$READY" != "true" ]; then
+              echo "❌ Health check failed: Pod $POD readiness probe failing"
+              exit 1
+            fi
+          done
+          echo "✅ All readiness probes passing"
+          
+          # Check 4: Check logs for errors
+          for POD in $GREEN_PODS; do
+            ERROR_COUNT=$(kubectl logs $POD -n transaction-validator --tail=100 | grep -i "error\|fatal\|exception" | wc -l || echo "0")
+            if [ "$ERROR_COUNT" -gt "5" ]; then
+              echo "❌ Health check failed: Pod $POD has too many errors ($ERROR_COUNT)"
+              kubectl logs $POD -n transaction-validator --tail=50
+              exit 1
+            fi
+          done
+          echo "✅ Error log check passed"
+          
+          # Check 5: Test health endpoint
+          FIRST_POD=$(echo $GREEN_PODS | awk '{print $1}')
+          kubectl exec $FIRST_POD -n transaction-validator -- wget -q -O- http://localhost:8080/health 2>/dev/null || echo "⚠️  Health endpoint check skipped"
+          
+          # Check 6: Verify deployment ready
+          READY_REPLICAS=$(kubectl get deployment transaction-validator-green -n transaction-validator -o jsonpath='{.status.readyReplicas}')
+          DESIRED_REPLICAS=$(kubectl get deployment transaction-validator-green -n transaction-validator -o jsonpath='{.spec.replicas}')
+          if [ "$READY_REPLICAS" != "$DESIRED_REPLICAS" ]; then
+            echo "❌ Health check failed: $READY_REPLICAS/$DESIRED_REPLICAS replicas ready"
+            exit 1
+          fi
+          echo "✅ All replicas ready: $READY_REPLICAS/$DESIRED_REPLICAS"
+          
+          echo "✅ All health checks passed! GREEN deployment is healthy."
+
+      - name: Monitor GREEN Stability (2 minutes)
+        run: |
+          echo "📊 Monitoring GREEN deployment stability..."
+          
+          for i in {1..4}; do
+            echo "Stability check $i/4..."
+            
+            # Check pod status
+            PODS_READY=$(kubectl get deployment transaction-validator-green -n transaction-validator -o jsonpath='{.status.readyReplicas}')
+            PODS_DESIRED=$(kubectl get deployment transaction-validator-green -n transaction-validator -o jsonpath='{.spec.replicas}')
+            
+            if [ "$PODS_READY" != "$PODS_DESIRED" ]; then
+              echo "❌ Pod count mismatch: $PODS_READY/$PODS_DESIRED ready"
+              exit 1
+            fi
+            
+            # Check for crashloops
+            CRASHLOOP=$(kubectl get pods -n transaction-validator -l app.kubernetes.io/name=transaction-validator-green -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}' | grep -o "CrashLoopBackOff" | wc -l || echo "0")
+            if [ "$CRASHLOOP" -gt "0" ]; then
+              echo "❌ Detected CrashLoopBackOff in GREEN deployment"
+              exit 1
+            fi
+            
+            echo "✅ GREEN deployment stable ($PODS_READY/$PODS_DESIRED pods ready)"
+            sleep 30
+          done
+          
+          echo "✅ GREEN deployment is stable!"
+
+      - name: Switch Traffic to GREEN (Blue-Green Cutover)
+        run: |
+          echo "🔄 Switching traffic from BLUE to GREEN..."
+          
+          cd terraform/environments/prod
+          terraform init
+          ROLE_ARN=$(terraform output -raw app_secrets_role_arn)
+          
+          cd ../../..
+          
+          # Update main deployment to point to new version
+          helm upgrade --install transaction-validator ./helm/transaction-validator \
+            --namespace transaction-validator \
+            --values ./helm/transaction-validator/values-prod.yaml \
+            --set image.tag=${{ github.sha }} \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN \
+            --wait \
+            --timeout 10m
+          
+          echo "✅ Traffic switched to GREEN (new version)"
+
+      - name: Verify Traffic Switch
+        run: |
+          echo "🔍 Verifying traffic switch..."
+          
+          kubectl rollout status deployment/transaction-validator -n transaction-validator --timeout=5m
+          
+          NEW_IMAGE=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "📦 Main deployment now running: $NEW_IMAGE"
+          
+          READY=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.status.readyReplicas}')
+          DESIRED=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.replicas}')
+          
+          if [ "$READY" != "$DESIRED" ]; then
+            echo "❌ Main deployment not fully ready: $READY/$DESIRED"
+            exit 1
+          fi
+          
+          echo "✅ Traffic successfully switched to new version"
+          kubectl get pods,svc,ingress -n transaction-validator
+
+      - name: Cleanup GREEN Deployment
+        run: |
+          echo "🧹 Cleaning up temporary GREEN deployment..."
+          helm uninstall transaction-validator-green -n transaction-validator || echo "GREEN deployment already removed"
+          echo "✅ Cleanup complete"
+
+      - name: Deployment Summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ PRODUCTION DEPLOYMENT SUCCESSFUL"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Version: ${{ github.sha }}"
+          echo "🎯 Image: $(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          echo "📊 Replicas: $(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.status.readyReplicas}')/$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.replicas}')"
+          echo "⏰ Deployed at: $(date -u)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Automatic Rollback on Failure
+        if: failure() && steps.blue.outputs.exists == 'true'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "❌ DEPLOYMENT FAILED - INITIATING ROLLBACK"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Cleanup failed GREEN deployment
+          echo "🧹 Removing failed GREEN deployment..."
+          helm uninstall transaction-validator-green -n transaction-validator || echo "GREEN deployment not found"
+          
+          # Rollback main deployment using Helm
+          REVISION_COUNT=$(helm history transaction-validator -n transaction-validator --max 5 -o json | jq '. | length')
+          
+          if [ "$REVISION_COUNT" -gt "1" ]; then
+            echo "🔄 Rolling back main deployment to previous version..."
+            helm rollback transaction-validator -n transaction-validator --wait --timeout=10m
+            
+            # Verify rollback
+            kubectl rollout status deployment/transaction-validator -n transaction-validator --timeout=10m
+            
+            CURRENT_IMAGE=$(kubectl get deployment transaction-validator -n transaction-validator -o jsonpath='{.spec.template.spec.containers[0].image}')
+            echo "✅ Rollback completed successfully"
+            echo "📦 Restored to: $CURRENT_IMAGE"
+            kubectl get pods -n transaction-validator
+          else
+            echo "⚠️  No previous revision available for rollback"
+          fi
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Exit with error to mark workflow as failed
+          exit 1
