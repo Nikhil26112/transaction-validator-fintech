@@ -40,9 +40,9 @@ resource "aws_elasticache_parameter_group" "main" {
 
 # Replication Group (Cluster)
 resource "aws_elasticache_replication_group" "main" {
-  replication_group_id       = "${var.project_name}-${var.environment}-redis"
+  replication_group_id          = "${var.project_name}-${var.environment}-redis"
   replication_group_description = "Redis cluster for ${var.project_name} ${var.environment}"
-  
+
   engine               = "redis"
   engine_version       = var.engine_version
   node_type            = var.node_type
@@ -67,7 +67,7 @@ resource "aws_elasticache_replication_group" "main" {
   maintenance_window       = var.maintenance_window
   snapshot_window          = var.snapshot_window
   snapshot_retention_limit = var.snapshot_retention_limit
-  
+
   # Auto minor version upgrade
   auto_minor_version_upgrade = var.auto_minor_version_upgrade
 
@@ -114,7 +114,7 @@ resource "random_password" "redis_auth_token" {
 resource "aws_secretsmanager_secret" "redis_auth_token" {
   name        = "${var.project_name}-${var.environment}-redis-auth-token"
   description = "Auth token for Redis cluster"
-  
+
   recovery_window_in_days = var.secret_recovery_window_days
 
   tags = var.tags

@@ -69,10 +69,10 @@ module "networking" {
 module "security_groups" {
   source = "../../modules/security-groups"
 
-  project_name         = var.project_name
-  environment          = var.environment
-  vpc_id               = module.networking.vpc_id
-  allowed_cidr_blocks  = var.allowed_cidr_blocks
+  project_name        = var.project_name
+  environment         = var.environment
+  vpc_id              = module.networking.vpc_id
+  allowed_cidr_blocks = var.allowed_cidr_blocks
 
   tags = local.common_tags
 }
@@ -81,11 +81,11 @@ module "security_groups" {
 module "observability" {
   source = "../../modules/observability"
 
-  project_name           = var.project_name
-  environment            = var.environment
-  region                 = var.aws_region
-  alert_email_addresses  = var.alert_email_addresses
-  log_retention_days     = var.log_retention_days
+  project_name             = var.project_name
+  environment              = var.environment
+  region                   = var.aws_region
+  alert_email_addresses    = var.alert_email_addresses
+  log_retention_days       = var.log_retention_days
   audit_log_retention_days = var.audit_log_retention_days
 
   tags = local.common_tags
@@ -95,20 +95,20 @@ module "observability" {
 module "database" {
   source = "../../modules/database"
 
-  project_name          = var.project_name
-  environment           = var.environment
-  subnet_ids            = module.networking.database_subnet_ids
-  security_group_id     = module.security_groups.aurora_security_group_id
-  availability_zones    = var.availability_zones
-  database_name         = var.database_name
-  master_username       = var.database_master_username
-  engine_version        = var.aurora_engine_version
-  instance_class        = var.aurora_instance_class
-  instance_count        = var.aurora_instance_count
+  project_name            = var.project_name
+  environment             = var.environment
+  subnet_ids              = module.networking.database_subnet_ids
+  security_group_id       = module.security_groups.aurora_security_group_id
+  availability_zones      = var.availability_zones
+  database_name           = var.database_name
+  master_username         = var.database_master_username
+  engine_version          = var.aurora_engine_version
+  instance_class          = var.aurora_instance_class
+  instance_count          = var.aurora_instance_count
   backup_retention_period = var.database_backup_retention_period
-  deletion_protection   = var.database_deletion_protection
-  skip_final_snapshot   = var.database_skip_final_snapshot
-  alarm_actions         = [module.observability.sns_topic_arn]
+  deletion_protection     = var.database_deletion_protection
+  skip_final_snapshot     = var.database_skip_final_snapshot
+  alarm_actions           = [module.observability.sns_topic_arn]
 
   tags = local.common_tags
 }
@@ -117,17 +117,17 @@ module "database" {
 module "cache" {
   source = "../../modules/cache"
 
-  project_name           = var.project_name
-  environment            = var.environment
-  subnet_ids             = module.networking.private_subnet_ids
-  security_group_id      = module.security_groups.redis_security_group_id
-  engine_version         = var.redis_engine_version
-  node_type              = var.redis_node_type
-  num_cache_nodes        = var.redis_num_cache_nodes
-  multi_az_enabled       = var.redis_multi_az_enabled
+  project_name             = var.project_name
+  environment              = var.environment
+  subnet_ids               = module.networking.private_subnet_ids
+  security_group_id        = module.security_groups.redis_security_group_id
+  engine_version           = var.redis_engine_version
+  node_type                = var.redis_node_type
+  num_cache_nodes          = var.redis_num_cache_nodes
+  multi_az_enabled         = var.redis_multi_az_enabled
   snapshot_retention_limit = var.redis_snapshot_retention_limit
-  notification_topic_arn = module.observability.sns_topic_arn
-  alarm_actions          = [module.observability.sns_topic_arn]
+  notification_topic_arn   = module.observability.sns_topic_arn
+  alarm_actions            = [module.observability.sns_topic_arn]
 
   tags = local.common_tags
 }
@@ -136,16 +136,16 @@ module "cache" {
 module "eks" {
   source = "../../modules/eks"
 
-  project_name                            = var.project_name
-  environment                             = var.environment
-  private_subnet_ids                      = module.networking.private_subnet_ids
-  public_subnet_ids                       = module.networking.public_subnet_ids
-  cluster_security_group_id               = module.security_groups.eks_cluster_security_group_id
-  cluster_version                         = var.eks_cluster_version
-  cluster_endpoint_public_access          = var.eks_cluster_endpoint_public_access
-  cluster_endpoint_public_access_cidrs    = var.eks_cluster_endpoint_public_access_cidrs
-  log_retention_days                      = var.log_retention_days
-  node_groups                             = var.eks_node_groups
+  project_name                         = var.project_name
+  environment                          = var.environment
+  private_subnet_ids                   = module.networking.private_subnet_ids
+  public_subnet_ids                    = module.networking.public_subnet_ids
+  cluster_security_group_id            = module.security_groups.eks_cluster_security_group_id
+  cluster_version                      = var.eks_cluster_version
+  cluster_endpoint_public_access       = var.eks_cluster_endpoint_public_access
+  cluster_endpoint_public_access_cidrs = var.eks_cluster_endpoint_public_access_cidrs
+  log_retention_days                   = var.log_retention_days
+  node_groups                          = var.eks_node_groups
 
   tags = local.common_tags
 }

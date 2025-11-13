@@ -75,9 +75,9 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/EKS", "cluster_failed_node_count", { stat = "Average", period = 300 }],
             [".", "cluster_node_count", { stat = "Average", period = 300 }]
           ]
-          period  = 300
-          region  = var.region
-          title   = "EKS Cluster Nodes"
+          period = 300
+          region = var.region
+          title  = "EKS Cluster Nodes"
           yAxis = {
             left = {
               min = 0
@@ -92,9 +92,9 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/RDS", "CPUUtilization", { stat = "Average", period = 300 }],
             [".", "DatabaseConnections", { stat = "Average", period = 300 }]
           ]
-          period  = 300
-          region  = var.region
-          title   = "RDS Metrics"
+          period = 300
+          region = var.region
+          title  = "RDS Metrics"
           yAxis = {
             left = {
               min = 0
@@ -109,9 +109,9 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["AWS/ElastiCache", "CPUUtilization", { stat = "Average", period = 300 }],
             [".", "DatabaseMemoryUsagePercentage", { stat = "Average", period = 300 }]
           ]
-          period  = 300
-          region  = var.region
-          title   = "ElastiCache Metrics"
+          period = 300
+          region = var.region
+          title  = "ElastiCache Metrics"
           yAxis = {
             left = {
               min = 0
@@ -122,9 +122,9 @@ resource "aws_cloudwatch_dashboard" "main" {
       {
         type = "log"
         properties = {
-          query   = "SOURCE '/aws/application/${var.project_name}-${var.environment}' | fields @timestamp, @message | sort @timestamp desc | limit 100"
-          region  = var.region
-          title   = "Recent Application Logs"
+          query  = "SOURCE '/aws/application/${var.project_name}-${var.environment}' | fields @timestamp, @message | sort @timestamp desc | limit 100"
+          region = var.region
+          title  = "Recent Application Logs"
         }
       }
     ]
@@ -210,11 +210,11 @@ resource "aws_cloudwatch_event_target" "eks_events_sns" {
 
 # CloudWatch Composite Alarm for Critical System Health
 resource "aws_cloudwatch_composite_alarm" "critical_system_health" {
-  alarm_name          = "${var.project_name}-${var.environment}-critical-system-health"
-  alarm_description   = "Composite alarm for critical system health"
-  actions_enabled     = true
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_name        = "${var.project_name}-${var.environment}-critical-system-health"
+  alarm_description = "Composite alarm for critical system health"
+  actions_enabled   = true
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  ok_actions        = [aws_sns_topic.alerts.arn]
 
   alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.high_error_rate.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.fatal_errors.alarm_name})"
 

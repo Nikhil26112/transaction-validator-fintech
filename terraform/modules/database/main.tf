@@ -121,13 +121,13 @@ resource "random_password" "master" {
 
 # Aurora Cluster
 resource "aws_rds_cluster" "main" {
-  cluster_identifier     = "${var.project_name}-${var.environment}-aurora-cluster"
-  engine                 = "aurora-postgresql"
-  engine_version         = var.engine_version
-  database_name          = var.database_name
-  master_username        = var.master_username
-  master_password        = random_password.master.result
-  
+  cluster_identifier = "${var.project_name}-${var.environment}-aurora-cluster"
+  engine             = "aurora-postgresql"
+  engine_version     = var.engine_version
+  database_name      = var.database_name
+  master_username    = var.master_username
+  master_password    = random_password.master.result
+
   db_subnet_group_name            = aws_db_subnet_group.main.name
   db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.main.name
   vpc_security_group_ids          = [var.security_group_id]
@@ -145,8 +145,8 @@ resource "aws_rds_cluster" "main" {
   availability_zones = var.availability_zones
 
   # Deletion protection
-  deletion_protection = var.deletion_protection
-  skip_final_snapshot = var.skip_final_snapshot
+  deletion_protection       = var.deletion_protection
+  skip_final_snapshot       = var.skip_final_snapshot
   final_snapshot_identifier = var.skip_final_snapshot ? null : "${var.project_name}-${var.environment}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
 
   # Enable Performance Insights
@@ -181,12 +181,12 @@ resource "aws_rds_cluster_instance" "main" {
   engine             = aws_rds_cluster.main.engine
   engine_version     = aws_rds_cluster.main.engine_version
   instance_class     = var.instance_class
-  
+
   db_parameter_group_name = aws_db_parameter_group.main.name
-  
+
   # Performance Insights
-  performance_insights_enabled    = var.performance_insights_enabled
-  performance_insights_kms_key_id = var.kms_key_id
+  performance_insights_enabled          = var.performance_insights_enabled
+  performance_insights_kms_key_id       = var.kms_key_id
   performance_insights_retention_period = var.performance_insights_retention_period
 
   # Monitoring
@@ -234,7 +234,7 @@ resource "aws_iam_role" "rds_enhanced_monitoring" {
 resource "aws_secretsmanager_secret" "db_master_password" {
   name        = "${var.project_name}-${var.environment}-db-master-password"
   description = "Master password for Aurora PostgreSQL cluster"
-  
+
   recovery_window_in_days = var.secret_recovery_window_days
 
   tags = var.tags
